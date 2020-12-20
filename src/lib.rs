@@ -13,7 +13,12 @@
 //! app.with(upload_limiter);
 //! ```
 use async_trait::async_trait;
-use tide::{Middleware, StatusCode};
+use futures_util::io::AsyncBufRead;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tide::{Middleware, Request, StatusCode};
 
 mod byte_sniffer;
 use byte_sniffer::ByteSniffer;
@@ -32,23 +37,20 @@ impl UploadLimit {
     }
 }
 
-/// Errors that can occur when filtering payload size
+/// Request body payload is larger than the configured maximum
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Request body payload is larger than the configured maximum
-    #[error("payload size exceeds configured maximum ({size} > {limit})")]
-    PayloadTooLarge {
-        /// The size of the payload
-        size: usize,
+#[error("payload size exceeds configured maximum ({size} > {limit})")]
+pub struct Error {
+    /// The size of the payload
+    size: usize,
 
-        /// The maximum payload size
-        limit: usize,
-    },
+    /// The maximum payload size
+    limit: usize,
 }
 
 impl Error {
-    pub(crate) fn payload_too_large(size: usize, limit: usize) -> Self {
-        Self::PayloadTooLarge { size, limit }
+    pub(crate) fn new(size: usize, limit: usize) -> Self {
+        Self { size, limit }
     }
 }
 
@@ -65,16 +67,15 @@ where
         let length = request.len();
         check_header(self.max_content_length, length)?;
 
-        let body = request.take_body();
+        let upload_clamped = wrap_request(self.max_content_length, &mut request);
 
-        let sniffer =
-            futures_util::io::BufReader::new(ByteSniffer::new(self.max_content_length, body));
+        let mut response = next.run(request).await;
 
-        let sniffed_reader = tide::Body::from_reader(sniffer, length);
+        if upload_clamped.load(Ordering::Relaxed) {
+            response.set_status(StatusCode::PayloadTooLarge)
+        };
 
-        request.set_body(sniffed_reader);
-
-        Ok(next.run(request).await)
+        Ok(response)
     }
 }
 
@@ -85,12 +86,37 @@ fn check_header(max_length: usize, length: Option<usize>) -> Result<(), tide::Er
         if len > max_length {
             Err(tide::Error::new(
                 StatusCode::PayloadTooLarge,
-                Error::payload_too_large(len, max_length),
+                Error::new(len, max_length),
             ))
         } else {
             Ok(())
         }
     })
+}
+
+/// Wrap the request body in a byte sniffer and then reassemble the request
+fn wrap_request<State>(max_length: usize, request: &mut Request<State>) -> Arc<AtomicBool> {
+    let length = request.len();
+    let body = request.take_body();
+
+    let (sniffer, upload_clamped) = get_sniffer(max_length, body);
+
+    let sniffed_reader = tide::Body::from_reader(sniffer, length);
+
+    request.set_body(sniffed_reader);
+
+    upload_clamped
+}
+
+/// Create a new byte 'sniffer' to count bytes as they go past
+fn get_sniffer(max_length: usize, body: tide::Body) -> (impl AsyncBufRead, Arc<AtomicBool>) {
+    let upload_clamped = Arc::new(AtomicBool::new(false));
+
+    let sniffer = futures_util::io::BufReader::new(
+        ByteSniffer::new(max_length, body).with_callback(upload_clamped.clone()),
+    );
+
+    (sniffer, upload_clamped)
 }
 
 #[cfg(test)]

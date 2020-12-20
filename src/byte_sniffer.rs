@@ -2,11 +2,14 @@ use futures_util::io::AsyncRead;
 use pin_project::pin_project;
 use std::{
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
 #[pin_project]
-#[derive(Debug)]
 pub(crate) struct ByteSniffer<Reader>
 where
     Reader: AsyncRead,
@@ -20,6 +23,8 @@ where
 
     /// The configured maximum length
     max_length: usize,
+
+    upload_clamped: Option<Arc<AtomicBool>>,
 }
 
 impl<Reader> ByteSniffer<Reader>
@@ -33,12 +38,15 @@ where
             inner,
             current_length,
             max_length,
+            upload_clamped: None,
         }
     }
-}
 
-/// Helper functions for [`AsyncRead`] implementation
-impl<Reader> ByteSniffer<Reader> where Reader: AsyncRead {}
+    pub fn with_callback(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.upload_clamped = Some(flag);
+        self
+    }
+}
 
 impl<Reader> AsyncRead for ByteSniffer<Reader>
 where
@@ -54,7 +62,12 @@ where
         let result = this.inner.poll_read(cx, buf);
 
         match result {
-            Poll::Ready(Ok(bytes)) => handle_ok(this.current_length, *this.max_length, bytes),
+            Poll::Ready(Ok(bytes)) => handle_ok(
+                this.current_length,
+                *this.max_length,
+                bytes,
+                this.upload_clamped,
+            ),
             x => x,
         }
     }
@@ -64,28 +77,44 @@ fn handle_ok(
     current_length: &mut usize,
     max_length: usize,
     bytes: usize,
+    upload_clamped: &Option<Arc<AtomicBool>>,
 ) -> Poll<Result<usize, futures_util::io::Error>> {
     *current_length += bytes;
 
-    check_under_maximum(*current_length, max_length)?;
-
-    Poll::Ready(Ok(bytes))
+    Poll::Ready(match check_under_maximum(*current_length, max_length) {
+        Ok(()) => Ok(bytes),
+        Err(e) => {
+            if let Some(b) = upload_clamped {
+                b.store(true, Ordering::Relaxed)
+            }
+            Err(e.into())
+        }
+    })
 }
 
-fn check_under_maximum(
-    current_length: usize,
-    max_length: usize,
-) -> Result<(), futures_util::io::Error> {
+fn check_under_maximum(current_length: usize, max_length: usize) -> Result<(), Error> {
     if current_length > max_length {
-        Err(futures_util::io::Error::new(
-            futures_util::io::ErrorKind::InvalidData,
-            format!(
-                "payload is larger than configured maximum (>{} bytes)",
-                max_length
-            ),
-        ))
+        Err(Error::new(max_length))
     } else {
         Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("payload is larger than configured maximum (>{maximum_length} bytes)")]
+pub(crate) struct Error {
+    maximum_length: usize,
+}
+
+impl Error {
+    fn new(maximum_length: usize) -> Self {
+        Self { maximum_length }
+    }
+}
+
+impl From<Error> for futures_util::io::Error {
+    fn from(e: Error) -> Self {
+        futures_util::io::Error::new(futures_util::io::ErrorKind::InvalidData, e.to_string())
     }
 }
 
