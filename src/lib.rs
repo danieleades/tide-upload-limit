@@ -1,4 +1,4 @@
-#![deny(clippy::all, missing_debug_implementations, missing_docs, unsafe_code)]
+#![deny(clippy::all, missing_debug_implementations, unsafe_code)]
 #![warn(clippy::pedantic)]
 
 //! An upload limiting filter [`Middleware`](tide::Middleware) for ['tide']
@@ -57,8 +57,11 @@ where
 
         let body = request.take_body();
 
-        let sniffer =
-            futures_util::io::BufReader::new(ByteSniffer::new(self.max_content_length, body));
+        let sniffer = futures_util::io::BufReader::new(ByteSniffer::new(
+            self.max_content_length,
+            body,
+            length,
+        ));
 
         let sniffed_reader = tide::Body::from_reader(sniffer, length);
 
