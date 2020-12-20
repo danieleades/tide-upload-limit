@@ -1,9 +1,12 @@
 #![deny(clippy::all, missing_debug_implementations, missing_docs, unsafe_code)]
 #![warn(clippy::pedantic)]
 
-//! An upload limiting filter [`Middleware`] for ['tide']
+//! An upload limiting filter [`Middleware`](tide::Middleware) for ['tide']
 use async_trait::async_trait;
 use tide::{Middleware, StatusCode};
+
+mod byte_sniffer;
+use byte_sniffer::ByteSniffer;
 
 /// An upload limiting filter middleware for tide
 #[derive(Debug)]
@@ -49,11 +52,17 @@ where
         mut request: tide::Request<State>,
         next: tide::Next<'_, State>,
     ) -> tide::Result {
-        check_header(self.max_content_length, &request)?;
+        let length = request.len();
+        check_header(self.max_content_length, length)?;
 
         let body = request.take_body();
-        // TODO: wrap the Body in a 'sniffer' and stick it back in the Request
-        request.set_body(body);
+
+        let sniffer =
+            futures_util::io::BufReader::new(ByteSniffer::new(self.max_content_length, body));
+
+        let sniffed_reader = tide::Body::from_reader(sniffer, length);
+
+        request.set_body(sniffed_reader);
 
         Ok(next.run(request).await)
     }
@@ -61,15 +70,12 @@ where
 
 /// if the length is set, and is larger than the configured maximum, then we
 /// have an 'escape hatch' without requiring any further processing.
-fn check_header<State>(
-    max_length: usize,
-    request: &tide::Request<State>,
-) -> Result<(), tide::Error> {
-    request.len().map_or(Ok(()), |length| {
-        if length > max_length {
+fn check_header(max_length: usize, length: Option<usize>) -> Result<(), tide::Error> {
+    length.map_or(Ok(()), |len| {
+        if len > max_length {
             Err(tide::Error::new(
                 StatusCode::PayloadTooLarge,
-                Error::payload_too_large(length, max_length),
+                Error::payload_too_large(len, max_length),
             ))
         } else {
             Ok(())
@@ -83,23 +89,11 @@ mod tests {
     use super::check_header;
     use test_case::test_case;
 
-    fn build_request(input: impl Into<String>) -> tide::Request<()> {
-        let mut request: tide::Request<()> = tide::http::Request::new(
-            tide::http::Method::Post,
-            tide::http::Url::parse("http://_").unwrap(),
-        )
-        .into();
-
-        request.set_body(tide::http::Body::from_string(input.into()));
-
-        request
-    }
-
     #[test_case("test string", 32 ; "when content is shorter than maximum")]
     #[test_case("test string", 8 => panics "payload size exceeds configured maximum (11 > 8)" ; "when content is longer than maximum")]
     fn check_header_test(input: &str, max_length: usize) {
-        let request = build_request(input);
+        let length = Some(input.len());
 
-        check_header(max_length, &request).unwrap()
+        check_header(max_length, length).unwrap()
     }
 }
