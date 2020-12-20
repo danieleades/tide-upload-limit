@@ -46,50 +46,46 @@ where
         let result = this.inner.poll_read(cx, buf);
 
         match result {
-            Poll::Ready(Ok(0)) => {
-                if this.length < this.max_length {
-                    Poll::Ready(Err(futures_util::io::Error::new(
-                        futures_util::io::ErrorKind::InvalidData,
-                        format!(
-                            "payload is smaller than expected ({} < {})",
-                            this.length, this.max_length
-                        ),
-                    )))
-                } else {
-                    Poll::Ready(Ok(0))
-                }
-            }
-            Poll::Ready(Ok(bytes)) => {
-                *this.length += bytes;
-                if this.length > this.max_length {
-                    Poll::Ready(Err(futures_util::io::Error::new(
-                        futures_util::io::ErrorKind::InvalidData,
-                        format!("payload is too large (>{} bytes)", this.max_length),
-                    )))
-                } else {
-                    Poll::Ready(Ok(bytes))
-                }
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(0)) => handle_eof(*this.length, *this.max_length),
+            Poll::Ready(Ok(bytes)) => handle_ok(bytes, this.length, this.max_length),
+            x => x,
         }
     }
+}
 
-    fn poll_read_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        bufs: &mut [futures_util::io::IoSliceMut<'_>],
-    ) -> Poll<futures_util::io::Result<usize>> {
-        //todo reimplement this to delegate to `self::inner`s implementation
+fn handle_eof(length: usize, max_length: usize) -> Poll<Result<usize, futures_util::io::Error>> {
+    let result = if length < max_length {
+        Err(futures_util::io::Error::new(
+            futures_util::io::ErrorKind::InvalidData,
+            format!(
+                "payload is smaller than expected ({} < {})",
+                length, max_length
+            ),
+        ))
+    } else {
+        Ok(0)
+    };
 
-        for b in bufs {
-            if !b.is_empty() {
-                return self.poll_read(cx, b);
-            }
-        }
+    Poll::Ready(result)
+}
 
-        self.poll_read(cx, &mut [])
-    }
+fn handle_ok(
+    bytes: usize,
+    length: &mut usize,
+    max_length: &mut usize,
+) -> Poll<Result<usize, futures_util::io::Error>> {
+    *length += bytes;
+
+    let result = if length > max_length {
+        Err(futures_util::io::Error::new(
+            futures_util::io::ErrorKind::InvalidData,
+            format!("payload is too large (>{} bytes)", max_length),
+        ))
+    } else {
+        Ok(bytes)
+    };
+
+    Poll::Ready(result)
 }
 
 #[cfg(test)]
