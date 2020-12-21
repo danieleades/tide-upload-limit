@@ -7,11 +7,11 @@ edition = "2018"
 [workspace]
 members = [
     ".",
-    "upload-limit",
+    "async-read-limit",
 ]
 
 [dependencies]
-upload-limit = {path = "upload-limit"}
+async-read-limit = {path = "async-read-limit"}
 thiserror = "1.0.22"
 tide = "0.15.0"
 async-trait = "0.1.42"

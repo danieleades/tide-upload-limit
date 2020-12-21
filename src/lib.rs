@@ -20,7 +20,7 @@ use std::sync::{
 };
 use tide::{Middleware, Request, StatusCode};
 
-use upload_limit::ByteSniffer;
+use async_read_limit::AsyncReadLimit;
 
 /// An upload limiting filter middleware for tide
 #[derive(Debug)]
@@ -113,8 +113,8 @@ fn get_sniffer(max_length: usize, body: tide::Body) -> (impl AsyncBufRead, Arc<A
     let upload_clamped_clone = Arc::clone(&upload_clamped);
 
     let sniffer =
-        futures_util::io::BufReader::new(ByteSniffer::new(max_length, body).with_callback(
-            move |result: Result<(), upload_limit::Error>| {
+        futures_util::io::BufReader::new(AsyncReadLimit::new(max_length, body).with_callback(
+            move |result: Result<(), async_read_limit::Error>| {
                 if result.is_err() {
                     upload_clamped_clone.store(true, Ordering::SeqCst)
                 }

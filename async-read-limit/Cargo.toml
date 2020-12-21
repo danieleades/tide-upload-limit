@@ -1,5 +1,5 @@
 [package]
-name = "upload-limit"
+name = "async-read-limit"
 version = "0.1.0"
 authors = ["Daniel Eades <danieleades@hotmail.com>"]
 edition = "2018"

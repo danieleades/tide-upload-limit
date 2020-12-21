@@ -1,3 +1,6 @@
+#![deny(clippy::all, unsafe_code)]
+#![warn(clippy::pedantic)]
+
 use futures_io::AsyncRead;
 use pin_project::pin_project;
 use std::{
@@ -11,7 +14,7 @@ pub trait Callback: Fn(Result<(), Error>) + Send + Sync + 'static {}
 impl<F> Callback for F where F: Fn(Result<(), Error>) + Send + Sync + 'static {}
 
 #[pin_project]
-pub struct ByteSniffer<Reader>
+pub struct AsyncReadLimit<Reader>
 where
     Reader: AsyncRead,
 {
@@ -29,7 +32,7 @@ where
     callback: Option<Arc<dyn Callback>>,
 }
 
-impl<Reader> ByteSniffer<Reader>
+impl<Reader> AsyncReadLimit<Reader>
 where
     Reader: AsyncRead,
 {
@@ -57,7 +60,7 @@ where
     ///     atomic::{AtomicBool, Ordering},
     ///     Arc,
     /// };
-    /// use upload_limit::ByteSniffer;
+    /// use upload_limit::AsyncReadLimit;
     ///
     /// let async_reader = "some string".as_bytes();
     /// let max_length = 1024 * 1024 * 4;
@@ -66,7 +69,7 @@ where
     /// let payload_too_large_clone = Arc::clone(&payload_too_large);
     ///
     /// let upload_limiter =
-    ///     ByteSniffer::new(max_length, async_reader).with_callback(move |result: Result<_, _>| {
+    ///     AsyncReadLimit::new(max_length, async_reader).with_callback(move |result: Result<_, _>| {
     ///         if result.is_err() {
     ///             payload_too_large_clone.store(true, Ordering::SeqCst)
     ///         }
@@ -78,7 +81,7 @@ where
     }
 }
 
-impl<Reader> AsyncRead for ByteSniffer<Reader>
+impl<Reader> AsyncRead for AsyncReadLimit<Reader>
 where
     Reader: AsyncRead,
 {
@@ -156,7 +159,7 @@ impl From<Error> for futures_io::Error {
 #[cfg(test)]
 mod tests {
 
-    use super::ByteSniffer;
+    use super::AsyncReadLimit;
     use futures_util::io::AsyncReadExt;
     use test_case::test_case;
 
@@ -164,7 +167,7 @@ mod tests {
     #[test_case("test string", 128 ; "when payload is less than the maximum")]
     #[async_std::test]
     async fn max_value(payload: &str, max_length: usize) {
-        let mut bytes_sniffer = ByteSniffer::new(max_length, payload.as_bytes());
+        let mut bytes_sniffer = AsyncReadLimit::new(max_length, payload.as_bytes());
 
         let mut output = Vec::new();
 
