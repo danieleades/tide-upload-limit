@@ -1,4 +1,4 @@
-#![deny(clippy::all, missing_debug_implementations, unsafe_code)]
+#![deny(clippy::all, unsafe_code)]
 #![warn(clippy::pedantic)]
 
 //! An upload limiting filter [`Middleware`](tide::Middleware) for ['tide']
@@ -20,8 +20,7 @@ use std::sync::{
 };
 use tide::{Middleware, Request, StatusCode};
 
-mod byte_sniffer;
-use byte_sniffer::ByteSniffer;
+use upload_limit::ByteSniffer;
 
 /// An upload limiting filter middleware for tide
 #[derive(Debug)]
@@ -111,10 +110,16 @@ fn wrap_request<State>(max_length: usize, request: &mut Request<State>) -> Arc<A
 /// Create a new byte 'sniffer' to count bytes as they go past
 fn get_sniffer(max_length: usize, body: tide::Body) -> (impl AsyncBufRead, Arc<AtomicBool>) {
     let upload_clamped = Arc::new(AtomicBool::new(false));
+    let upload_clamped_clone = Arc::clone(&upload_clamped);
 
-    let sniffer = futures_util::io::BufReader::new(
-        ByteSniffer::new(max_length, body).with_callback(upload_clamped.clone()),
-    );
+    let sniffer =
+        futures_util::io::BufReader::new(ByteSniffer::new(max_length, body).with_callback(
+            move |result: Result<(), upload_limit::Error>| {
+                if result.is_err() {
+                    upload_clamped_clone.store(true, Ordering::SeqCst)
+                }
+            },
+        ));
 
     (sniffer, upload_clamped)
 }

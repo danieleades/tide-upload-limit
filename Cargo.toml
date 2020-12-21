@@ -4,12 +4,18 @@ version = "0.1.0"
 authors = ["Daniel Eades <danieleades@hotmail.com>"]
 edition = "2018"
 
+[workspace]
+members = [
+    ".",
+    "upload-limit",
+]
+
 [dependencies]
+upload-limit = {path = "upload-limit"}
 thiserror = "1.0.22"
 tide = "0.15.0"
 async-trait = "0.1.42"
 futures-util = { version = "0.3.8", features = ["io"] }
-pin-project = "1.0.2"
 
 [dev-dependencies]
 test-case = { git = "https://github.com/frondeus/test-case" }

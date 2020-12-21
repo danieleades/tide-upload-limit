@@ -1,16 +1,17 @@
-use futures_util::io::AsyncRead;
+use futures_io::AsyncRead;
 use pin_project::pin_project;
 use std::{
     pin::Pin,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
     task::{Context, Poll},
 };
 
+pub trait Callback: Fn(Result<(), Error>) + Send + Sync + 'static {}
+
+impl<F> Callback for F where F: Fn(Result<(), Error>) + Send + Sync + 'static {}
+
 #[pin_project]
-pub(crate) struct ByteSniffer<Reader>
+pub struct ByteSniffer<Reader>
 where
     Reader: AsyncRead,
 {
@@ -24,7 +25,8 @@ where
     /// The configured maximum length
     max_length: usize,
 
-    upload_clamped: Option<Arc<AtomicBool>>,
+    /// Optional callback for when the stream has finished being read
+    callback: Option<Arc<dyn Callback>>,
 }
 
 impl<Reader> ByteSniffer<Reader>
@@ -38,12 +40,40 @@ where
             inner,
             current_length,
             max_length,
-            upload_clamped: None,
+            callback: None,
         }
     }
 
-    pub fn with_callback(mut self, flag: Arc<AtomicBool>) -> Self {
-        self.upload_clamped = Some(flag);
+    /// Optionally set a callback which fires when the stream is fully read.
+    ///
+    /// The callback must be a function which accepts [`Result<(), Error>`].
+    /// `()` is returned if the stream is read successfully, and [`Error`] is
+    /// returned if the maximum length is exceeded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::{
+    ///     atomic::{AtomicBool, Ordering},
+    ///     Arc,
+    /// };
+    /// use upload_limit::ByteSniffer;
+    ///
+    /// let async_reader = "some string".as_bytes();
+    /// let max_length = 1024 * 1024 * 4;
+    ///
+    /// let payload_too_large = Arc::new(AtomicBool::new(false));
+    /// let payload_too_large_clone = Arc::clone(&payload_too_large);
+    ///
+    /// let upload_limiter =
+    ///     ByteSniffer::new(max_length, async_reader).with_callback(move |result: Result<_, _>| {
+    ///         if result.is_err() {
+    ///             payload_too_large_clone.store(true, Ordering::SeqCst)
+    ///         }
+    ///     });
+    /// ```
+    pub fn with_callback<F: Callback>(mut self, cb: F) -> Self {
+        self.callback = Some(Arc::new(cb));
         self
     }
 }
@@ -56,36 +86,41 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &mut [u8],
-    ) -> Poll<futures_util::io::Result<usize>> {
+    ) -> Poll<futures_io::Result<usize>> {
         let this = self.project();
 
         let result = this.inner.poll_read(cx, buf);
 
         match result {
-            Poll::Ready(Ok(bytes)) => handle_ok(
-                this.current_length,
-                *this.max_length,
-                bytes,
-                this.upload_clamped,
-            ),
+            Poll::Ready(Ok(0)) => handle_eof(this.callback),
+            Poll::Ready(Ok(bytes)) => {
+                handle_ok(this.current_length, *this.max_length, bytes, this.callback)
+            }
             x => x,
         }
     }
+}
+
+fn handle_eof(callback: &Option<Arc<dyn Callback>>) -> Poll<Result<usize, futures_io::Error>> {
+    if let Some(cb) = callback {
+        (cb)(Ok(()))
+    }
+    Poll::Ready(Ok(0))
 }
 
 fn handle_ok(
     current_length: &mut usize,
     max_length: usize,
     bytes: usize,
-    upload_clamped: &Option<Arc<AtomicBool>>,
-) -> Poll<Result<usize, futures_util::io::Error>> {
+    callback: &Option<Arc<dyn Callback>>,
+) -> Poll<Result<usize, futures_io::Error>> {
     *current_length += bytes;
 
     Poll::Ready(match check_under_maximum(*current_length, max_length) {
         Ok(()) => Ok(bytes),
         Err(e) => {
-            if let Some(b) = upload_clamped {
-                b.store(true, Ordering::Relaxed)
+            if let Some(cb) = callback {
+                (cb)(Err(e));
             }
             Err(e.into())
         }
@@ -100,9 +135,9 @@ fn check_under_maximum(current_length: usize, max_length: usize) -> Result<(), E
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, Copy)]
 #[error("payload is larger than configured maximum (>{maximum_length} bytes)")]
-pub(crate) struct Error {
+pub struct Error {
     maximum_length: usize,
 }
 
@@ -112,9 +147,9 @@ impl Error {
     }
 }
 
-impl From<Error> for futures_util::io::Error {
+impl From<Error> for futures_io::Error {
     fn from(e: Error) -> Self {
-        futures_util::io::Error::new(futures_util::io::ErrorKind::InvalidData, e.to_string())
+        futures_io::Error::new(futures_io::ErrorKind::InvalidData, e.to_string())
     }
 }
 
