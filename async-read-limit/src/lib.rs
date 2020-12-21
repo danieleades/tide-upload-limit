@@ -56,11 +56,11 @@ where
     /// # Example
     ///
     /// ```
+    /// use async_read_limit::AsyncReadLimit;
     /// use std::sync::{
     ///     atomic::{AtomicBool, Ordering},
     ///     Arc,
     /// };
-    /// use upload_limit::AsyncReadLimit;
     ///
     /// let async_reader = "some string".as_bytes();
     /// let max_length = 1024 * 1024 * 4;
