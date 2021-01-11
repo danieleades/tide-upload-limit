@@ -90,6 +90,7 @@ where
         cx: &mut Context,
         buf: &mut [u8],
     ) -> Poll<futures_io::Result<usize>> {
+        println!("'poll_read' called");
         let this = self.project();
 
         let result = this.inner.poll_read(cx, buf);
@@ -105,6 +106,7 @@ where
 }
 
 fn handle_eof(callback: &Option<Arc<dyn Callback>>) -> Poll<Result<usize, futures_io::Error>> {
+    println!("'handle_eof' called");
     if let Some(cb) = callback {
         (cb)(Ok(()))
     }
@@ -117,7 +119,10 @@ fn handle_ok(
     bytes: usize,
     callback: &Option<Arc<dyn Callback>>,
 ) -> Poll<Result<usize, futures_io::Error>> {
+    println!("'handle_ok' called");
     *current_length += bytes;
+
+    println!("have read {} of {} bytes", current_length, max_length);
 
     Poll::Ready(match check_under_maximum(*current_length, max_length) {
         Ok(()) => Ok(bytes),
@@ -132,8 +137,10 @@ fn handle_ok(
 
 fn check_under_maximum(current_length: usize, max_length: usize) -> Result<(), Error> {
     if current_length > max_length {
+        println!("current length was greater than maximum!");
         Err(Error::new(max_length))
     } else {
+        println!("everything was fine");
         Ok(())
     }
 }
